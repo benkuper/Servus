@@ -28,6 +28,8 @@
 
 #define WARN std::cerr << __FILE__ << ":" << __LINE__ << ": "
 
+//#define MY_PRINTF(...) {char cad[512]; sprintf(cad, __VA_ARGS__);  OutputDebugString(cad);}
+
 namespace servus
 {
 namespace dnssd
@@ -115,9 +117,24 @@ private:
     int32_t _result;
     std::string _browsedName;
 
+    int lookUpCount = -1;
+    int numToLookUp = 0;
+
+    struct CallbackContext
+    {
+        Servus* servus;
+        std::string browsedName;
+        std::string host;
+        std::uint16_t port;
+    };
+
     servus::Servus::Result _browse(const ::servus::Servus::Interface addr)
     {
         assert(!_in);
+       
+        lookUpCount = -1;
+        numToLookUp = 0;
+
         const DNSServiceErrorType error =
             DNSServiceBrowse(&_in, 0, addr, _name.c_str(), "",
                              (DNSServiceBrowseReply)_browseCBS, this);
@@ -189,7 +206,10 @@ private:
             switch (result)
             {
             case 0: // timeout
-                _result = kDNSServiceErr_NoError;
+                printf("Lookup count / num to look up : %i/%i\n", lookUpCount, numToLookUp);
+                if (lookUpCount < numToLookUp) _result = servus::Servus::Result::PENDING; // reset for next operation
+                else  _result = kDNSServiceErr_NoError;
+
                 break;
 
             case -1: // error
@@ -212,6 +232,8 @@ private:
                     {
                         WARN << "DNSServiceProcessResult error: " << error
                              << std::endl;
+
+
                         withdraw();
                         _result = error;
                     }
@@ -225,7 +247,7 @@ private:
         return result;
     }
 
-    static void DNSSD_API registerCBS_(DNSServiceRef, DNSServiceFlags,
+    static void registerCBS_(DNSServiceRef, DNSServiceFlags,
                              DNSServiceErrorType error, const char* name,
                              const char* type, const char* domain,
                              Servus* servus)
@@ -248,7 +270,7 @@ private:
         _result = error;
     }
 
-    static void DNSSD_API _browseCBS(DNSServiceRef, DNSServiceFlags flags,
+    static void _browseCBS(DNSServiceRef, DNSServiceFlags flags,
                            uint32_t interfaceIdx, DNSServiceErrorType error,
                            const char* name, const char* type,
                            const char* domain, Servus* servus)
@@ -260,6 +282,8 @@ private:
                    DNSServiceErrorType error, const char* name,
                    const char* type, const char* domain)
     {
+       
+
         if (error != kDNSServiceErr_NoError)
         {
             WARN << "Browse callback error: " << error << std::endl;
@@ -272,15 +296,19 @@ private:
 
             DNSServiceRef service = 0;
             const DNSServiceErrorType resolve =
-                DNSServiceResolve(&service, 0, interfaceIdx, name, type, domain,
+                DNSServiceResolve(&service, kDNSServiceFlagsMoreComing, interfaceIdx, name, type, domain,
                                   (DNSServiceResolveReply)resolveCBS_, this);
             if (resolve != kDNSServiceErr_NoError)
                 WARN << "DNSServiceResolve error: " << resolve << std::endl;
 
+            //MY_PRINTF(" Browsed name ");
+            //MY_PRINTF(_browsedName.c_str());
+            //MY_PRINTF("\n");
+
             if (service)
             {
                 _handleEvents(service, 500);
-                DNSServiceRefDeallocate(service);
+                //DNSServiceRefDeallocate(service);
             }
         }
         else // dns_sd.h: callback with the Add flag NOT set indicates a Remove
@@ -291,37 +319,104 @@ private:
         }
     }
 
-    static void DNSSD_API resolveCBS_(DNSServiceRef, DNSServiceFlags,
-                            uint32_t /*interfaceIdx*/,
+    static void resolveCBS_(DNSServiceRef client, DNSServiceFlags flags, 
+                            uint32_t interfaceIdx,
                             DNSServiceErrorType error, const char* /*name*/,
-                            const char* host, uint16_t /*port*/,
+                            const char* host, const uint16_t port,
                             uint16_t txtLen, const unsigned char* txt,
                             Servus* servus)
     {
+        
+       // MY_PRINTF(" Resolve CBS\n");
+        
         if (error == kDNSServiceErr_NoError)
-            servus->resolveCB_(host, txtLen, txt);
+            servus->resolveCB_(host, port, txtLen, txt, interfaceIdx, &client);
         servus->_result = error;
     }
 
-    void resolveCB_(const char* host, uint16_t txtLen, const unsigned char* txt)
+    void resolveCB_(const char* host, const uint16_t port, uint16_t txtLen,
+                    const unsigned char* txt, uint32_t interfaceIdx, DNSServiceRef * client)
     {
-        ValueMap& values = _instanceMap[_browsedName];
-        values["servus_host"] = host;
+       
+       // MY_PRINTF("Resolve CB\n");
 
-        char key[256] = {0};
+        numToLookUp++;
+        if (lookUpCount == -1) lookUpCount = 0;
+        
+        ValueMap& values = _instanceMap[_browsedName];
+        
+        char key[256] = { 0 };
         const char* value = 0;
         uint8_t valueLen = 0;
 
         uint16_t i = 0;
         while (TXTRecordGetItemAtIndex(txtLen, txt, i, sizeof(key), key,
-                                       &valueLen, (const void**)(&value)) ==
-               kDNSServiceErr_NoError)
+            &valueLen, (const void**)(&value)) ==
+            kDNSServiceErr_NoError)
         {
             values[key] = std::string(value, valueLen);
             ++i;
         }
-        for (Listener* listener : _listeners)
-            listener->instanceAdded(_browsedName);
+
+
+        CallbackContext* ctx = new CallbackContext({ this, _browsedName, host, port });
+
+        //MY_PRINTF("Launch Lookup CB\n");
+        DNSServiceErrorType err = DNSServiceGetAddrInfo(client,
+            kDNSServiceFlagsTimeout,
+            interfaceIdx,
+            kDNSServiceProtocol_IPv4,
+            host,
+            &Servus::getAddressCallback,
+            ctx);
+
+        if (err != kDNSServiceErr_NoError)
+        {
+            //MY_PRINTF("Launch Lookup ERROR\n");
+            numToLookUp++;
+        }
+
+        _handleEvents(*client, 500);
+    }
+
+    static void getAddressCallback(DNSServiceRef sdRef,
+        DNSServiceFlags flags,
+        uint32_t interfaceIndex,
+        DNSServiceErrorType errorCode,
+        const char* hostname,
+        const struct sockaddr* address,
+        uint32_t ttl,
+        void* context)
+    {
+        //MY_PRINTF("Address callback\n");
+
+        CallbackContext* ctx = (CallbackContext*)context;
+        ValueMap& values = ctx->servus->_instanceMap[ctx->browsedName];
+        
+        
+        if (!errorCode) {
+            const sockaddr_in* in = (const sockaddr_in*)address;
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(in->sin_addr), ip, INET_ADDRSTRLEN);
+            values["servus_ip"] = ip;
+            //MY_PRINTF("FOUND IP ! %s\n", ip);
+        }
+        else
+        {
+            values["servus_ip"] = "0.0.0.0"; //means error
+        }
+
+        values["servus_host"] = ctx->host;
+        values["servus_port"] = std::to_string(unsigned(ntohs(ctx->port)));
+
+        
+        for (Listener* listener : ctx->servus->_listeners)
+            listener->instanceAdded(ctx->browsedName);
+       
+        ctx->servus->lookUpCount++;
+        delete ctx;
+
+        DNSServiceRefDeallocate(sdRef);
     }
 };
 }
