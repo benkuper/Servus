@@ -23,6 +23,10 @@
 #include <servus/api.h>
 #include <servus/types.h>
 
+#ifdef _MSC_VER
+#include <stdexcept>
+#endif
+
 #include <functional> // function
 #include <memory>     // shared_ptr
 
