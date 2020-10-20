@@ -47,6 +47,7 @@ public:
 
     virtual ~Servus()
     {
+        shouldExit = true;
         withdraw();
         endBrowsing();
     }
@@ -103,6 +104,7 @@ public:
 
     void endBrowsing() final
     {
+        shouldExit = true;
         if (!_in)
             return;
 
@@ -119,6 +121,7 @@ private:
 
     int lookUpCount = -1;
     int numToLookUp = 0;
+    bool shouldExit = false;
 
     struct CallbackContext
     {
@@ -206,9 +209,17 @@ private:
             switch (result)
             {
             case 0: // timeout
-                printf("Lookup count / num to look up : %i/%i\n", lookUpCount, numToLookUp);
-                if (lookUpCount < numToLookUp) _result = servus::Servus::Result::PENDING; // reset for next operation
-                else  _result = kDNSServiceErr_NoError;
+                if (isBrowsing())
+                {
+                    //printf("Lookup count / num to look up : %i/%i\n", lookUpCount, numToLookUp);
+                    if (lookUpCount < numToLookUp) _result = servus::Servus::Result::PENDING; // reset for next operation
+                    else  _result = kDNSServiceErr_NoError;
+                }
+                else
+                {
+                    _result = kDNSServiceErr_NoError;
+                }
+
 
                 break;
 
