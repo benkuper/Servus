@@ -105,11 +105,13 @@ public:
     void endBrowsing() final
     {
         shouldExit = true;
-        if (!_in)
-            return;
+        while (isBrowsing()) {}
+    }
 
-        DNSServiceRefDeallocate(_in);
-        _in = 0;
+    void cleanIn()
+    {
+        if (_in = nullptr) DNSServiceRefDeallocate(_in);
+        _in = nullptr;
     }
 
     bool isBrowsing() const final { return _in != 0; }
@@ -133,6 +135,12 @@ private:
 
     servus::Servus::Result _browse(const ::servus::Servus::Interface addr)
     {
+        if (_in == nullptr)
+        {
+            shouldExit = true;
+            return servus::Servus::Result(kDNSServiceErr_BadReference);
+        }
+
         assert(!_in);
        
         lookUpCount = -1;
@@ -146,6 +154,7 @@ private:
         {
             WARN << "DNSServiceDiscovery error: " << error << " for " << _name
                  << " on " << addr << std::endl;
+            cleanIn();
             endBrowsing();
         }
         return servus::Servus::Result(error);
@@ -183,6 +192,12 @@ private:
     servus::Servus::Result _handleEvents(DNSServiceRef service,
                                          const int32_t timeout = -1)
     {
+        if (shouldExit)
+        {
+            cleanIn(); 
+            return servus::Servus::Result(kDNSServiceErr_Unknown);
+        }
+
         assert(service);
         if (!service)
             return servus::Servus::Result(kDNSServiceErr_Unknown);
@@ -196,6 +211,12 @@ private:
 
         while (_result == servus::Servus::Result::PENDING)
         {
+            if (shouldExit)
+            {
+                cleanIn();
+                return servus::Servus::Result(kDNSServiceErr_Unknown);
+            }
+
             fd_set fdSet;
             FD_ZERO(&fdSet);
             FD_SET(fd, &fdSet);
@@ -206,6 +227,7 @@ private:
 
             const int result =
                 ::select(nfds, &fdSet, 0, 0, timeout < 0 ? 0 : &tv);
+
             switch (result)
             {
             case 0: // timeout
