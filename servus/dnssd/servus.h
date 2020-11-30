@@ -105,6 +105,7 @@ public:
     void endBrowsing() final
     {
         shouldExit = true;
+        cleanIn();
         while (isBrowsing()) {}
     }
 
@@ -135,12 +136,6 @@ private:
 
     servus::Servus::Result _browse(const ::servus::Servus::Interface addr)
     {
-        if (_in == nullptr)
-        {
-            shouldExit = true;
-            return servus::Servus::Result(kDNSServiceErr_BadReference);
-        }
-
         assert(!_in);
        
         lookUpCount = -1;
@@ -423,7 +418,10 @@ private:
     {
         //MY_PRINTF("Address callback\n");
 
+
         CallbackContext* ctx = (CallbackContext*)context;
+        if (ctx->servus->shouldExit) return;
+       
         ValueMap& values = ctx->servus->_instanceMap[ctx->browsedName];
         
         
